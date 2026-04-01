@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
-from app.markdown_codec import clone_unfinished_tasks, create_empty_document, parse_markdown, serialize_document
-from app.models import Document, Item, SECTION_CARRY, SECTION_ORDER, SECTION_ROUTINE, SECTION_TODAY
+from app.markdown_codec import clone_carried_tasks, create_empty_document, parse_markdown, serialize_document
+from app.models import Document, Item, SECTION_ORDER, SECTION_ROUTINE, SECTION_TEMPORARY
 
 
 @dataclass
@@ -74,20 +74,31 @@ def repair_document(doc: Document, paths: ProjectPaths, today: date) -> Document
 def build_new_daily_document(paths: ProjectPaths, today: date) -> Document:
     doc = create_empty_document(today)
     doc.sections[SECTION_ROUTINE] = [item.clone() for item in parse_template(paths.template)]
-    doc.sections[SECTION_CARRY] = collect_carry_over(paths, today)
-    doc.sections[SECTION_TODAY] = []
+    doc.sections[SECTION_TEMPORARY] = collect_carry_over(paths, today)
     return repair_document(doc, paths, today)
 
 
 def collect_carry_over(paths: ProjectPaths, today: date) -> list[Item]:
-    yesterday_path = paths.daily_file(today - timedelta(days=1))
-    if not yesterday_path.exists():
+    previous_path = find_previous_daily_file(paths, today)
+    if previous_path is None:
         return []
-    yesterday = load_document(yesterday_path, today - timedelta(days=1))
-    carried = []
-    carried.extend(clone_unfinished_tasks(yesterday.sections.get(SECTION_CARRY, [])))
-    carried.extend(clone_unfinished_tasks(yesterday.sections.get(SECTION_TODAY, [])))
-    return carried
+    previous = load_document(previous_path)
+    return clone_carried_tasks(previous.sections.get(SECTION_TEMPORARY, []))
+
+
+def find_previous_daily_file(paths: ProjectPaths, today: date) -> Path | None:
+    candidates = []
+    for path in paths.data_daily.glob("*.md"):
+        try:
+            day = date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if day < today:
+            candidates.append((day, path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def parse_template(template_path: Path) -> list[Item]:

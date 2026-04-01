@@ -1,16 +1,15 @@
 - Daily task list
-  - [x] Check pending documents
+  - [ ] Check pending documents
   - [ ] Record work schedule results
-  - [x] Review unprocessed fault reports
-  - [x] Review overdue work orders
-  - [x] Approve work orders on behalf of the deputy director
-  - [x] Check work orders returned for revision
-    - 工單退回
+  - [ ] Review unprocessed fault reports
+  - [ ] Review overdue work orders
+  - [ ] Approve work orders on behalf of the deputy director
+  - [ ] Check work orders returned for revision
   - Daily review items
-    - [x] Check pending daily inspection work orders
-    - [x] Clean up duplicate daily inspection work orders
-    - [x] Follow up on issue reports submitted to contractors
+    - [ ] Check pending daily inspection work orders
+    - [ ] Clean up duplicate daily inspection work orders
+    - [ ] Follow up on issue reports submitted to contractors
     - [ ] Check open fault reports
-      - [x] Levels A: >2026/3/3
-      - [x] Levels B: >=2026/1/24
+      - [ ] Levels A: >2026/3/3
+      - [ ] Levels B: >=2026/1/24
       - [ ] Levels C: >2026/1/2

@@ -4,7 +4,16 @@ import re
 from datetime import date
 from typing import List, Sequence, Tuple
 
-from app.models import Document, Item, SECTION_ORDER, TASK_CANCELED, TASK_DONE, TASK_OPEN
+from app.models import (
+    Document,
+    Item,
+    LEGACY_TEMPORARY_SECTIONS,
+    SECTION_ORDER,
+    SECTION_TEMPORARY,
+    TASK_CANCELED,
+    TASK_DONE,
+    TASK_OPEN,
+)
 
 
 TASK_PATTERN = re.compile(r"^(?P<indent>\s*)- \[(?P<status>[ x-])\] (?P<text>.*)$")
@@ -49,6 +58,8 @@ def parse_markdown(content: str, fallback_date: date | None = None) -> Document:
             section_name = section_match.group("section")
             if section_name in SECTION_ORDER:
                 current_section = section_name
+            elif section_name in LEGACY_TEMPORARY_SECTIONS:
+                current_section = SECTION_TEMPORARY
             else:
                 current_section = None
                 extra_name = section_name
@@ -95,10 +106,10 @@ def serialize_document(doc: Document) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def clone_unfinished_tasks(items: Sequence[Item]) -> List[Item]:
+def clone_carried_tasks(items: Sequence[Item]) -> List[Item]:
     carried: List[Item] = []
     for item in items:
-        if not item.is_task() or item.status != TASK_OPEN:
+        if not item.is_task() or item.status not in {TASK_OPEN, TASK_CANCELED}:
             continue
         carried_item = item.clone()
         carried_item.children = _filter_children_for_carry(item.children)
@@ -110,7 +121,7 @@ def _filter_children_for_carry(items: Sequence[Item]) -> List[Item]:
     result: List[Item] = []
     for item in items:
         if item.is_task():
-            if item.status == TASK_OPEN:
+            if item.status in {TASK_OPEN, TASK_CANCELED}:
                 clone = item.clone()
                 clone.children = _filter_children_for_carry(item.children)
                 result.append(clone)

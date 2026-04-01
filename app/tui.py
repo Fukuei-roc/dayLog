@@ -8,7 +8,7 @@ from pathlib import Path
 from shutil import get_terminal_size
 from typing import List, Optional
 
-from app.commands import apply_command
+from app.commands import apply_command, expand_note_macro
 from app.models import Document, Item, SECTION_ORDER, TASK_CANCELED, TASK_DONE, TASK_OPEN
 from app.storage import save_document
 
@@ -33,6 +33,12 @@ class VisibleRow:
     parent_list: Optional[List[Item]] = None
     parent_item: Optional[Item] = None
     depth: int = 0
+
+
+@dataclass
+class EditorState:
+    text: str
+    cursor: int
 
 
 class DayLogApp:
@@ -128,13 +134,17 @@ class DayLogApp:
             self.selected_index = max(0, self.selected_index - 1)
         elif key == "DOWN":
             self.selected_index = min(len(visible) - 1, self.selected_index + 1)
+        elif key in {"J", "j"}:
+            self._move_current(visible, -1)
+        elif key in {"K", "k"}:
+            self._move_current(visible, 1)
         elif key == "LEFT":
             self._set_collapsed(visible, True)
         elif key == "RIGHT":
             self._set_collapsed(visible, False)
         elif key == "TAB":
             self._indent_current(visible)
-        elif key == "SHIFT_TAB":
+        elif key in {"SHIFT_TAB", "b"}:
             self._outdent_current(visible)
         elif key == "SPACE":
             self._toggle_done(visible)
@@ -146,6 +156,8 @@ class DayLogApp:
             self._add_task(visible, child=True)
         elif key == "n":
             self._add_note(visible)
+        elif key == "e":
+            self._edit_current_text(visible)
         elif key == "d":
             self._delete_current(visible)
         elif key == "/":
@@ -195,10 +207,13 @@ class DayLogApp:
         if not text:
             self.message = "已取消新增"
             return
-        note = Item(kind="note", text=text)
+        note = Item(kind="note", text=expand_note_macro(text))
         if row.row_type == "section":
             self.document.sections[row.section].append(note)
         elif row.item is not None and row.item.is_task():
+            row.item.children.append(note)
+            row.item.collapsed = False
+        elif row.item is not None and row.item.is_note():
             row.item.children.append(note)
             row.item.collapsed = False
         elif row.parent_list is not None and row.item is not None:
@@ -213,6 +228,37 @@ class DayLogApp:
         row.parent_list.remove(row.item)
         self.selected_index = max(0, self.selected_index - 1)
         self._persist("已刪除")
+
+    def _move_current(self, visible: List[VisibleRow], direction: int) -> None:
+        row = visible[self.selected_index]
+        if row.row_type == "section" or row.parent_list is None or row.item is None:
+            self.message = "此列不能搬移"
+            return
+        siblings = row.parent_list
+        index = siblings.index(row.item)
+        target_index = index + direction
+        if target_index < 0 or target_index >= len(siblings):
+            self.message = "已到同層邊界"
+            return
+        siblings[index], siblings[target_index] = siblings[target_index], siblings[index]
+        self._persist("已調整順序")
+        refreshed = self._visible_rows()
+        for new_index, candidate in enumerate(refreshed):
+            if candidate.item is row.item and candidate.section == row.section:
+                self.selected_index = new_index
+                break
+
+    def _edit_current_text(self, visible: List[VisibleRow]) -> None:
+        row = visible[self.selected_index]
+        if row.row_type == "section" or row.item is None or row.item.kind not in {"task", "note"}:
+            self.message = "請先選取任務或筆記再編輯"
+            return
+        edited = self._line_editor("編輯", row.item.text)
+        if edited is None:
+            self.message = "已取消編輯"
+            return
+        row.item.text = edited
+        self._persist("已更新文字")
 
     def _indent_current(self, visible: List[VisibleRow]) -> None:
         row = visible[self.selected_index]
@@ -260,52 +306,111 @@ class DayLogApp:
             self.message = "已取消指令"
             return
         try:
-            self.message = apply_command(self.document, command, row.section)
+            self.message = apply_command(self.document, command, row.section, target_item=row.item)
             self._persist(self.message)
         except ValueError as exc:
             self.message = str(exc)
 
     def _prompt(self, label: str, initial: str = "") -> str:
-        buffer = initial
+        result = self._line_editor(label.rstrip(": "), initial)
+        return "" if result is None else result.strip()
+
+    def _line_editor(self, label: str, initial: str = "") -> Optional[str]:
+        state = EditorState(text=initial, cursor=len(initial))
         while True:
-            self.message = f"{label}{buffer}"
+            self.message = self._render_editor_message(label, state)
             self._render(self._visible_rows())
-            key = self._read_key(raw=True)
-            if key in ("\r", "\n"):
-                return buffer.strip()
-            if key == "\x1b":
-                return ""
-            if key in ("\b", "\x7f"):
-                buffer = buffer[:-1]
+            key = self._read_key()
+            if key == "ENTER":
+                return state.text
+            if key == "ESC":
+                return None
+            state = apply_editor_key(state, key)
+            if state is None:
                 continue
-            if key in ("\x00", "\xe0"):
-                msvcrt.getwch()
-                continue
-            if key == "\t":
-                continue
-            if key.isprintable():
-                buffer += key
+
+    def _render_editor_message(self, label: str, state: EditorState) -> str:
+        cursor = max(0, min(state.cursor, len(state.text)))
+        preview = state.text[:cursor] + "|" + state.text[cursor:]
+        return f"{label}: {preview}  Enter 儲存 Esc 取消"
 
     def _persist(self, message: str) -> None:
         save_document(self.path, self.document)
         self.message = message
 
     def _shortcuts_line(self, width: int) -> str:
-        text = "Up/Down 移動  Tab/Shift+Tab 縮排  a/A 任務  n 筆記  d 刪除  Space 完成  c 取消  <-/-> 收合  / 指令  q 離開"
+        text = "Up/Down 移動  J 上移/K 下移  Tab 縮排  b/Shift+Tab 取消縮排  a/A 任務  n 筆記  e 編輯  d 刪除  Space 完成  c 取消  <-/-> 收合  / 指令  q 離開"
         return text[:width]
 
     def _read_key(self, raw: bool = False) -> str:
         ch = msvcrt.getwch()
         if raw:
             return ch
+        if ch == "\x1b":
+            escape_key = self._read_escape_sequence()
+            if escape_key is not None:
+                return escape_key
+            return "ESC"
         if ch in ("\x00", "\xe0"):
             code = msvcrt.getwch()
-            return {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT", "\x0f": "SHIFT_TAB"}.get(code, code)
+            return {
+                "H": "UP",
+                "P": "DOWN",
+                "K": "LEFT",
+                "M": "RIGHT",
+                "S": "DELETE",
+                "G": "HOME",
+                "O": "END",
+                "\x0f": "SHIFT_TAB",
+            }.get(code, code)
         if ch == "\t":
             return "TAB"
         if ch == " ":
             return "SPACE"
+        if ch in ("\r", "\n"):
+            return "ENTER"
+        if ch in ("\b", "\x7f"):
+            return "BACKSPACE"
         return ch
+
+    def _read_escape_sequence(self) -> Optional[str]:
+        if not msvcrt.kbhit():
+            return None
+        second = msvcrt.getwch()
+        if second != "[":
+            return None
+        third = self._read_escape_char()
+        if third is None:
+            return None
+        if third == "Z":
+            return "SHIFT_TAB"
+        if third == "A":
+            return "UP"
+        if third == "B":
+            return "DOWN"
+        if third == "C":
+            return "RIGHT"
+        if third == "D":
+            return "LEFT"
+        if third == "H":
+            return "HOME"
+        if third == "F":
+            return "END"
+        if third == "1":
+            fourth = self._read_escape_char()
+            fifth = self._read_escape_char()
+            sixth = self._read_escape_char()
+            if fourth == ";" and fifth == "3":
+                if sixth == "A":
+                    return "ALT_UP"
+                if sixth == "B":
+                    return "ALT_DOWN"
+        return None
+
+    def _read_escape_char(self) -> Optional[str]:
+        if not msvcrt.kbhit():
+            return None
+        return msvcrt.getwch()
 
     def _enable_virtual_terminal(self) -> None:
         try:
@@ -366,3 +471,31 @@ class DayLogApp:
         if ctypes.windll.kernel32.GetConsoleCursorInfo(self._stdout_handle, ctypes.byref(info)):
             info.bVisible = 0
             ctypes.windll.kernel32.SetConsoleCursorInfo(self._stdout_handle, ctypes.byref(info))
+
+
+def apply_editor_key(state: EditorState, key: str) -> EditorState:
+    if key == "LEFT":
+        state.cursor = max(0, state.cursor - 1)
+        return state
+    if key == "RIGHT":
+        state.cursor = min(len(state.text), state.cursor + 1)
+        return state
+    if key == "HOME":
+        state.cursor = 0
+        return state
+    if key == "END":
+        state.cursor = len(state.text)
+        return state
+    if key == "BACKSPACE":
+        if state.cursor > 0:
+            state.text = state.text[: state.cursor - 1] + state.text[state.cursor :]
+            state.cursor -= 1
+        return state
+    if key == "DELETE":
+        if state.cursor < len(state.text):
+            state.text = state.text[: state.cursor] + state.text[state.cursor + 1 :]
+        return state
+    if len(key) == 1 and key.isprintable() and key != "\t":
+        state.text = state.text[: state.cursor] + key + state.text[state.cursor :]
+        state.cursor += 1
+    return state

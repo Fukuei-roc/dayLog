@@ -25,6 +25,15 @@ class DWORD(ctypes.c_ulong):
     pass
 
 
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_READ = 0x00000001
+FILE_SHARE_WRITE = 0x00000002
+OPEN_EXISTING = 3
+CONSOLE_TEXTMODE_BUFFER = 1
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
 @dataclass
 class VisibleRow:
     row_type: str
@@ -50,6 +59,8 @@ class DayLogApp:
         self.running = True
         self._last_frame_line_count = 0
         self._stdout_handle = None
+        self._original_stdout_handle = None
+        self._owns_console_handle = False
         self._enable_virtual_terminal()
 
     def run(self) -> int:
@@ -68,7 +79,9 @@ class DayLogApp:
         finally:
             self._move_cursor_to(0, self._last_frame_line_count)
             self._show_cursor()
-            self._write("\x1b[0m\n")
+            if not self._owns_console_handle:
+                self._write("\x1b[0m\n")
+            self._close_console_handle()
 
     def _visible_rows(self) -> List[VisibleRow]:
         rows: List[VisibleRow] = []
@@ -414,11 +427,46 @@ class DayLogApp:
 
     def _enable_virtual_terminal(self) -> None:
         try:
-            handle = ctypes.windll.kernel32.GetStdHandle(-11)
+            self._original_stdout_handle = ctypes.windll.kernel32.GetStdHandle(-11)
+            handle = ctypes.windll.kernel32.CreateConsoleScreenBuffer(
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                CONSOLE_TEXTMODE_BUFFER,
+                None,
+            )
+            if handle == INVALID_HANDLE_VALUE:
+                handle = ctypes.windll.kernel32.CreateFileW(
+                    "CONOUT$",
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    None,
+                    OPEN_EXISTING,
+                    0,
+                    None,
+                )
+            else:
+                ctypes.windll.kernel32.SetConsoleActiveScreenBuffer(handle)
+                self._owns_console_handle = True
+            if handle == INVALID_HANDLE_VALUE:
+                handle = ctypes.windll.kernel32.CreateFileW(
+                    "CONOUT$",
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    None,
+                    OPEN_EXISTING,
+                    0,
+                    None,
+                )
+            if handle == INVALID_HANDLE_VALUE:
+                handle = self._original_stdout_handle
+            elif not self._owns_console_handle:
+                self._owns_console_handle = True
             self._stdout_handle = handle
             mode = ctypes.c_uint()
             if ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
                 ctypes.windll.kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+                self._clear_console()
         except OSError:
             pass
 
@@ -471,6 +519,24 @@ class DayLogApp:
         if ctypes.windll.kernel32.GetConsoleCursorInfo(self._stdout_handle, ctypes.byref(info)):
             info.bVisible = 0
             ctypes.windll.kernel32.SetConsoleCursorInfo(self._stdout_handle, ctypes.byref(info))
+
+    def _clear_console(self) -> None:
+        if self._stdout_handle is None:
+            return
+        width, height = get_terminal_size((100, 32))
+        blank = " " * max(1, width - 1)
+        for row in range(height):
+            self._write_line_at(row, blank)
+        self._move_cursor_home()
+
+    def _close_console_handle(self) -> None:
+        if self._owns_console_handle and self._original_stdout_handle not in {None, INVALID_HANDLE_VALUE}:
+            ctypes.windll.kernel32.SetConsoleActiveScreenBuffer(self._original_stdout_handle)
+        if self._owns_console_handle and self._stdout_handle not in {None, INVALID_HANDLE_VALUE, self._original_stdout_handle}:
+            ctypes.windll.kernel32.CloseHandle(self._stdout_handle)
+        self._stdout_handle = None
+        self._original_stdout_handle = None
+        self._owns_console_handle = False
 
 
 def apply_editor_key(state: EditorState, key: str) -> EditorState:

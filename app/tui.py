@@ -68,6 +68,17 @@ class INPUT_RECORD(ctypes.Structure):
     _fields_ = [("EventType", ctypes.c_ushort), ("Event", INPUT_EVENT_UNION)]
 
 
+class CONSOLE_FONT_INFOEX(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_ulong),
+        ("nFont", ctypes.c_ulong),
+        ("dwFontSize", COORD),
+        ("FontFamily", ctypes.c_uint),
+        ("FontWeight", ctypes.c_uint),
+        ("FaceName", ctypes.c_wchar * 32),
+    ]
+
+
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 FILE_SHARE_READ = 0x00000001
@@ -111,6 +122,8 @@ class DayLogApp:
         self._owns_console_handle = False
         self._console_width = 99
         self._console_height = 32
+        self._buffer_width = 99
+        self._buffer_height = 32
         self._enable_virtual_terminal()
 
     def run(self) -> int:
@@ -199,6 +212,10 @@ class DayLogApp:
             self.selected_index = max(0, self.selected_index - 1)
         elif key == "DOWN":
             self.selected_index = min(len(visible) - 1, self.selected_index + 1)
+        elif key == "z":
+            self.selected_index = 0
+        elif key == "x":
+            self.selected_index = max(0, len(visible) - 1)
         elif key in {"J", "j"}:
             self._move_current(visible, -1)
         elif key in {"K", "k"}:
@@ -221,6 +238,8 @@ class DayLogApp:
             self._add_task(visible, child=True)
         elif key == "n":
             self._add_note(visible)
+        elif key == "m":
+            self._add_quick_note()
         elif key == "e":
             self._edit_current_text(visible)
         elif key in {"h", "H"}:
@@ -290,6 +309,20 @@ class DayLogApp:
         elif row.parent_list is not None and row.item is not None:
             row.parent_list.insert(row.parent_list.index(row.item) + 1, note)
         self._persist("已新增筆記")
+
+    def _add_quick_note(self) -> None:
+        text = self._prompt("快速筆記: ")
+        if not text:
+            self.message = "已取消新增"
+            return
+        note = Item(kind="note", text=expand_note_macro(text))
+        self.document.sections[SECTION_ORDER[-1]].append(note)
+        refreshed = self._visible_rows()
+        for index, row in enumerate(refreshed):
+            if row.item is note and row.section == SECTION_ORDER[-1]:
+                self.selected_index = index
+                break
+        self._persist("已新增快速筆記")
 
     def _delete_current(self, visible: List[VisibleRow]) -> None:
         row = visible[self.selected_index]
@@ -431,7 +464,7 @@ class DayLogApp:
         self.message = message
 
     def _shortcuts_line(self, width: int) -> str:
-        text = "Up/Down 移動  J 上移/K 下移  h 隱藏完成  Tab 縮排  b/Shift+Tab 取消縮排  a/A 任務  n 筆記  e 編輯  d 刪除  Space 完成  c 取消  <-/-> 收合  / 指令  q 離開"
+        text = "Up/Down 移動  z 頂部/x 底部  J 上移/K 下移  h 隱藏完成  Tab 縮排  b/Shift+Tab 取消縮排  a/A 任務  n 筆記  m 快速筆記  e 編輯  d 刪除  Space 完成  c 取消  <-/-> 收合  / 指令  q 離開"
         return text[:width]
 
     def _read_key(self, raw: bool = False) -> str:
@@ -683,15 +716,23 @@ class DayLogApp:
             width, height = get_terminal_size((100, 32))
             self._console_width = width
             self._console_height = height
+            self._buffer_width = width
+            self._buffer_height = height
             return
         info = CONSOLE_SCREEN_BUFFER_INFO()
         if ctypes.windll.kernel32.GetConsoleScreenBufferInfo(self._stdout_handle, ctypes.byref(info)):
-            self._console_width = max(1, info.srWindow.Right - info.srWindow.Left + 1)
-            self._console_height = max(1, info.srWindow.Bottom - info.srWindow.Top + 1)
+            window_width = max(1, info.srWindow.Right - info.srWindow.Left + 1)
+            window_height = max(1, info.srWindow.Bottom - info.srWindow.Top + 1)
+            self._buffer_width = max(1, info.dwSize.X)
+            self._buffer_height = max(1, info.dwSize.Y)
+            self._console_width = min(window_width, self._buffer_width)
+            self._console_height = min(window_height, self._buffer_height)
         else:
             width, height = get_terminal_size((100, 32))
             self._console_width = width
             self._console_height = height
+            self._buffer_width = width
+            self._buffer_height = height
 
     def _get_console_dimensions(self) -> tuple[int, int]:
         self._refresh_console_dimensions()
@@ -702,7 +743,7 @@ class DayLogApp:
             return False
         if item.is_task():
             return item.status == TASK_OPEN
-        return True
+        return any(self._is_visible_in_filtered_mode(child, item) for child in item.children)
 
 
 def apply_editor_key(state: EditorState, key: str) -> EditorState:

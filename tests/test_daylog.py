@@ -198,6 +198,20 @@ class DayLogTests(unittest.TestCase):
         app._handle_key("j", visible)
         self.assertEqual([item.text for item in doc.sections[SECTION_TEMPORARY]], ["第二項", "第一項"])
 
+    def test_handle_key_z_jumps_to_top(self) -> None:
+        app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
+        visible = app._visible_rows()
+        app.selected_index = min(3, len(visible) - 1)
+        app._handle_key("z", visible)
+        self.assertEqual(app.selected_index, 0)
+
+    def test_handle_key_x_jumps_to_bottom(self) -> None:
+        app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
+        visible = app._visible_rows()
+        app.selected_index = 0
+        app._handle_key("x", visible)
+        self.assertEqual(app.selected_index, len(visible) - 1)
+
     def test_find_previous_daily_file_uses_latest_existing_day(self) -> None:
         self.paths.daily_file(date(2026, 3, 28)).write_text("# 2026-03-28\n", encoding="utf-8")
         self.paths.daily_file(date(2026, 3, 31)).write_text("# 2026-03-31\n", encoding="utf-8")
@@ -232,6 +246,16 @@ class DayLogTests(unittest.TestCase):
         self.assertNotIn("已完成母任務", visible_texts)
         self.assertNotIn("不應顯示的子任務", visible_texts)
 
+    def test_hide_completed_mode_hides_note_parents_without_visible_children(self) -> None:
+        doc = build_new_daily_document(self.paths, date(2026, 4, 1))
+        note_parent = Item(kind="note", text="標題")
+        note_parent.children.append(Item(kind="task", text="已完成子任務", status="x"))
+        doc.sections[SECTION_ROUTINE] = [note_parent]
+        app = DayLogApp(doc, self.paths.daily_file(date(2026, 4, 1)))
+        app.hide_completed = True
+        visible_texts = [row.item.text for row in app._visible_rows() if row.item is not None]
+        self.assertNotIn("標題", visible_texts)
+
     def test_toggle_hide_completed_switches_mode(self) -> None:
         app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
         self.assertFalse(app.hide_completed)
@@ -239,6 +263,17 @@ class DayLogTests(unittest.TestCase):
         self.assertTrue(app.hide_completed)
         app._toggle_hide_completed()
         self.assertFalse(app.hide_completed)
+
+    def test_add_quick_note_appends_to_top_level_bottom(self) -> None:
+        doc = build_new_daily_document(self.paths, date(2026, 4, 1))
+        doc.sections[SECTION_TEMPORARY] = [Item(kind="task", text="任務", status=TASK_OPEN)]
+        app = DayLogApp(doc, self.paths.daily_file(date(2026, 4, 1)))
+        app._prompt = lambda label, initial="": "快速記錄"
+        app._add_quick_note()
+        self.assertEqual(doc.sections[SECTION_TEMPORARY][-1].kind, "note")
+        self.assertEqual(doc.sections[SECTION_TEMPORARY][-1].text, "快速記錄")
+        visible = app._visible_rows()
+        self.assertEqual(visible[app.selected_index].item.text, "快速記錄")
 
     def test_line_editor_does_not_fallback_when_dialog_cancelled(self) -> None:
         app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))

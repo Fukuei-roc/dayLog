@@ -77,6 +77,7 @@ CONSOLE_TEXTMODE_BUFFER = 1
 KEY_EVENT = 0x0001
 SHIFT_PRESSED = 0x0010
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+DIALOG_UNAVAILABLE = object()
 
 
 @dataclass
@@ -387,7 +388,7 @@ class DayLogApp:
 
     def _line_editor(self, label: str, initial: str = "") -> Optional[str]:
         dialog_result = self._dialog_prompt(label, initial)
-        if dialog_result is not None:
+        if dialog_result is not DIALOG_UNAVAILABLE:
             return dialog_result
         return self._inline_line_editor(label, initial)
 
@@ -418,7 +419,7 @@ class DayLogApp:
             payload = json.loads(completed.stdout or "{}")
             return payload.get("value")
         except Exception:
-            return None
+            return DIALOG_UNAVAILABLE
 
     def _render_editor_message(self, label: str, state: EditorState) -> str:
         cursor = max(0, min(state.cursor, len(state.text)))

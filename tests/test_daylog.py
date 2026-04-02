@@ -9,7 +9,7 @@ from app.commands import apply_command, expand_note_macro, run_command
 from app.markdown_codec import parse_markdown
 from app.models import Item, SECTION_ROUTINE, SECTION_TEMPORARY, TASK_CANCELED, TASK_OPEN
 from app.storage import build_new_daily_document, ensure_project_layout, find_previous_daily_file, load_or_create_today
-from app.tui import CHAR_UNION, DayLogApp, EditorState, KEY_EVENT_RECORD, SHIFT_PRESSED, VisibleRow, apply_editor_key
+from app.tui import CHAR_UNION, DIALOG_UNAVAILABLE, DayLogApp, EditorState, KEY_EVENT_RECORD, SHIFT_PRESSED, VisibleRow, apply_editor_key
 
 
 class DayLogTests(unittest.TestCase):
@@ -239,6 +239,18 @@ class DayLogTests(unittest.TestCase):
         self.assertTrue(app.hide_completed)
         app._toggle_hide_completed()
         self.assertFalse(app.hide_completed)
+
+    def test_line_editor_does_not_fallback_when_dialog_cancelled(self) -> None:
+        app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
+        app._dialog_prompt = lambda label, initial="": None
+        app._inline_line_editor = lambda label, initial="": "不應進入"
+        self.assertIsNone(app._line_editor("任務內容", ""))
+
+    def test_line_editor_falls_back_only_when_dialog_unavailable(self) -> None:
+        app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
+        app._dialog_prompt = lambda label, initial="": DIALOG_UNAVAILABLE
+        app._inline_line_editor = lambda label, initial="": "fallback"
+        self.assertEqual(app._line_editor("任務內容", ""), "fallback")
 
 
 if __name__ == "__main__":

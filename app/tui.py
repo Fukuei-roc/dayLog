@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import msvcrt
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -406,16 +407,16 @@ class DayLogApp:
 
     def _dialog_prompt(self, label: str, initial: str = "") -> Optional[str]:
         try:
-            import tkinter as tk
-            from tkinter import simpledialog
+            completed = subprocess.run(
+                [sys.executable, "-m", "app.input_dialog", label, initial],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            import json
 
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            try:
-                return simpledialog.askstring("DayLog", label, initialvalue=initial, parent=root)
-            finally:
-                root.destroy()
+            payload = json.loads(completed.stdout or "{}")
+            return payload.get("value")
         except Exception:
             return None
 

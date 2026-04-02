@@ -9,7 +9,7 @@ from app.commands import apply_command, expand_note_macro, run_command
 from app.markdown_codec import parse_markdown
 from app.models import Item, SECTION_ROUTINE, SECTION_TEMPORARY, TASK_CANCELED, TASK_OPEN
 from app.storage import build_new_daily_document, ensure_project_layout, find_previous_daily_file, load_or_create_today
-from app.tui import DayLogApp, EditorState, VisibleRow, apply_editor_key
+from app.tui import CHAR_UNION, DayLogApp, EditorState, KEY_EVENT_RECORD, SHIFT_PRESSED, VisibleRow, apply_editor_key
 
 
 class DayLogTests(unittest.TestCase):
@@ -203,6 +203,42 @@ class DayLogTests(unittest.TestCase):
         self.paths.daily_file(date(2026, 3, 31)).write_text("# 2026-03-31\n", encoding="utf-8")
         previous = find_previous_daily_file(self.paths, date(2026, 4, 1))
         self.assertEqual(previous, self.paths.daily_file(date(2026, 3, 31)))
+
+    def test_virtual_key_mapping_keeps_c_hotkey_stable(self) -> None:
+        app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
+        key = KEY_EVENT_RECORD(1, 1, ord("C"), 0, CHAR_UNION(UnicodeChar="c"), SHIFT_PRESSED - SHIFT_PRESSED)
+        self.assertEqual(app._map_virtual_key(key), "c")
+
+    def test_virtual_key_mapping_preserves_shift_for_uppercase_shortcuts(self) -> None:
+        app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
+        key = KEY_EVENT_RECORD(1, 1, ord("A"), 0, CHAR_UNION(UnicodeChar="A"), SHIFT_PRESSED)
+        self.assertEqual(app._map_virtual_key(key), "A")
+
+    def test_hide_completed_mode_shows_only_open_task_branches(self) -> None:
+        doc = build_new_daily_document(self.paths, date(2026, 4, 1))
+        open_parent = Item(kind="task", text="未完成母任務", status=TASK_OPEN)
+        open_child = Item(kind="task", text="未完成子任務", status=TASK_OPEN)
+        done_child = Item(kind="task", text="已完成子任務", status="x")
+        open_parent.children.extend([open_child, done_child])
+        done_parent = Item(kind="task", text="已完成母任務", status="x")
+        done_parent.children.append(Item(kind="task", text="不應顯示的子任務", status=TASK_OPEN))
+        doc.sections[SECTION_TEMPORARY] = [open_parent, done_parent]
+        app = DayLogApp(doc, self.paths.daily_file(date(2026, 4, 1)))
+        app.hide_completed = True
+        visible_texts = [row.item.text for row in app._visible_rows() if row.item is not None]
+        self.assertIn("未完成母任務", visible_texts)
+        self.assertIn("未完成子任務", visible_texts)
+        self.assertNotIn("已完成子任務", visible_texts)
+        self.assertNotIn("已完成母任務", visible_texts)
+        self.assertNotIn("不應顯示的子任務", visible_texts)
+
+    def test_toggle_hide_completed_switches_mode(self) -> None:
+        app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
+        self.assertFalse(app.hide_completed)
+        app._toggle_hide_completed()
+        self.assertTrue(app.hide_completed)
+        app._toggle_hide_completed()
+        self.assertFalse(app.hide_completed)
 
 
 if __name__ == "__main__":

@@ -25,12 +25,56 @@ class DWORD(ctypes.c_ulong):
     pass
 
 
+class SMALL_RECT(ctypes.Structure):
+    _fields_ = [
+        ("Left", ctypes.c_short),
+        ("Top", ctypes.c_short),
+        ("Right", ctypes.c_short),
+        ("Bottom", ctypes.c_short),
+    ]
+
+
+class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", COORD),
+        ("dwCursorPosition", COORD),
+        ("wAttributes", ctypes.c_ushort),
+        ("srWindow", SMALL_RECT),
+        ("dwMaximumWindowSize", COORD),
+    ]
+
+
+class CHAR_UNION(ctypes.Union):
+    _fields_ = [("UnicodeChar", ctypes.c_wchar), ("AsciiChar", ctypes.c_char)]
+
+
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", ctypes.c_int),
+        ("wRepeatCount", ctypes.c_ushort),
+        ("wVirtualKeyCode", ctypes.c_ushort),
+        ("wVirtualScanCode", ctypes.c_ushort),
+        ("uChar", CHAR_UNION),
+        ("dwControlKeyState", DWORD),
+    ]
+
+
+class INPUT_EVENT_UNION(ctypes.Union):
+    _fields_ = [("KeyEvent", KEY_EVENT_RECORD), ("Padding", ctypes.c_byte * 16)]
+
+
+class INPUT_RECORD(ctypes.Structure):
+    _fields_ = [("EventType", ctypes.c_ushort), ("Event", INPUT_EVENT_UNION)]
+
+
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
 OPEN_EXISTING = 3
 CONSOLE_TEXTMODE_BUFFER = 1
+KEY_EVENT = 0x0001
+SHIFT_PRESSED = 0x0010
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
 
@@ -57,10 +101,14 @@ class DayLogApp:
         self.selected_index = 0
         self.message = "DayLog 已載入，按 / 輸入指令，按 q 離開。"
         self.running = True
+        self.hide_completed = False
         self._last_frame_line_count = 0
         self._stdout_handle = None
         self._original_stdout_handle = None
+        self._stdin_handle = None
         self._owns_console_handle = False
+        self._console_width = 99
+        self._console_height = 32
         self._enable_virtual_terminal()
 
     def run(self) -> int:
@@ -101,12 +149,14 @@ class DayLogApp:
         depth: int,
     ) -> None:
         for item in items:
+            if self.hide_completed and not self._is_visible_in_filtered_mode(item, parent_item):
+                continue
             rows.append(VisibleRow("item", section, item, parent_list, parent_item, depth))
             if item.children and not item.collapsed:
                 self._append_items(rows, item.children, section, item.children, item, depth + 1)
 
     def _render(self, visible: List[VisibleRow]) -> None:
-        width, height = get_terminal_size((100, 32))
+        width, height = self._get_console_dimensions()
         usable_width = max(20, width - 1)
         body_height = max(8, height - 5)
         start = max(0, self.selected_index - body_height + 3)
@@ -171,6 +221,8 @@ class DayLogApp:
             self._add_note(visible)
         elif key == "e":
             self._edit_current_text(visible)
+        elif key in {"h", "H"}:
+            self._toggle_hide_completed()
         elif key == "d":
             self._delete_current(visible)
         elif key == "/":
@@ -183,6 +235,10 @@ class DayLogApp:
         if row.item and row.item.children:
             row.item.collapsed = collapsed
             self._persist("已收合" if collapsed else "已展開")
+
+    def _toggle_hide_completed(self) -> None:
+        self.hide_completed = not self.hide_completed
+        self.message = "已隱藏完成與取消項目" if self.hide_completed else "已恢復顯示全部項目"
 
     def _toggle_done(self, visible: List[VisibleRow]) -> None:
         row = visible[self.selected_index]
@@ -329,6 +385,12 @@ class DayLogApp:
         return "" if result is None else result.strip()
 
     def _line_editor(self, label: str, initial: str = "") -> Optional[str]:
+        dialog_result = self._dialog_prompt(label, initial)
+        if dialog_result is not None:
+            return dialog_result
+        return self._inline_line_editor(label, initial)
+
+    def _inline_line_editor(self, label: str, initial: str = "") -> Optional[str]:
         state = EditorState(text=initial, cursor=len(initial))
         while True:
             self.message = self._render_editor_message(label, state)
@@ -342,6 +404,21 @@ class DayLogApp:
             if state is None:
                 continue
 
+    def _dialog_prompt(self, label: str, initial: str = "") -> Optional[str]:
+        try:
+            import tkinter as tk
+            from tkinter import simpledialog
+
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            try:
+                return simpledialog.askstring("DayLog", label, initialvalue=initial, parent=root)
+            finally:
+                root.destroy()
+        except Exception:
+            return None
+
     def _render_editor_message(self, label: str, state: EditorState) -> str:
         cursor = max(0, min(state.cursor, len(state.text)))
         preview = state.text[:cursor] + "|" + state.text[cursor:]
@@ -352,10 +429,14 @@ class DayLogApp:
         self.message = message
 
     def _shortcuts_line(self, width: int) -> str:
-        text = "Up/Down 移動  J 上移/K 下移  Tab 縮排  b/Shift+Tab 取消縮排  a/A 任務  n 筆記  e 編輯  d 刪除  Space 完成  c 取消  <-/-> 收合  / 指令  q 離開"
+        text = "Up/Down 移動  J 上移/K 下移  h 隱藏完成  Tab 縮排  b/Shift+Tab 取消縮排  a/A 任務  n 筆記  e 編輯  d 刪除  Space 完成  c 取消  <-/-> 收合  / 指令  q 離開"
         return text[:width]
 
     def _read_key(self, raw: bool = False) -> str:
+        if self._stdin_handle is not None and not raw:
+            event_key = self._read_console_key_event()
+            if event_key is not None:
+                return event_key
         ch = msvcrt.getwch()
         if raw:
             return ch
@@ -385,6 +466,54 @@ class DayLogApp:
         if ch in ("\b", "\x7f"):
             return "BACKSPACE"
         return ch
+
+    def _read_console_key_event(self) -> Optional[str]:
+        record = INPUT_RECORD()
+        read = DWORD(0)
+        while ctypes.windll.kernel32.ReadConsoleInputW(self._stdin_handle, ctypes.byref(record), 1, ctypes.byref(read)):
+            if record.EventType != KEY_EVENT:
+                continue
+            key = record.Event.KeyEvent
+            if not key.bKeyDown:
+                continue
+            mapped = self._map_virtual_key(key)
+            if mapped is not None:
+                return mapped
+        return None
+
+    def _map_virtual_key(self, key: KEY_EVENT_RECORD) -> Optional[str]:
+        vk = key.wVirtualKeyCode
+        char = key.uChar.UnicodeChar or ""
+        if vk == 0x26:
+            return "UP"
+        if vk == 0x28:
+            return "DOWN"
+        if vk == 0x25:
+            return "LEFT"
+        if vk == 0x27:
+            return "RIGHT"
+        if vk == 0x09:
+            return "SHIFT_TAB" if key.dwControlKeyState.value & SHIFT_PRESSED else "TAB"
+        if vk == 0x20:
+            return "SPACE"
+        if vk == 0x0D:
+            return "ENTER"
+        if vk == 0x1B:
+            return "ESC"
+        if vk == 0x08:
+            return "BACKSPACE"
+        if vk == 0x2E:
+            return "DELETE"
+        if vk == 0x24:
+            return "HOME"
+        if vk == 0x23:
+            return "END"
+        if 0x41 <= vk <= 0x5A:
+            letter = chr(vk)
+            return letter if key.dwControlKeyState.value & SHIFT_PRESSED else letter.lower()
+        if char and char.isprintable():
+            return char
+        return None
 
     def _read_escape_sequence(self) -> Optional[str]:
         if not msvcrt.kbhit():
@@ -428,6 +557,7 @@ class DayLogApp:
     def _enable_virtual_terminal(self) -> None:
         try:
             self._original_stdout_handle = ctypes.windll.kernel32.GetStdHandle(-11)
+            self._stdin_handle = ctypes.windll.kernel32.GetStdHandle(-10)
             handle = ctypes.windll.kernel32.CreateConsoleScreenBuffer(
                 GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -466,7 +596,8 @@ class DayLogApp:
             mode = ctypes.c_uint()
             if ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
                 ctypes.windll.kernel32.SetConsoleMode(handle, mode.value | 0x0004)
-                self._clear_console()
+            self._refresh_console_dimensions()
+            self._clear_console()
         except OSError:
             pass
 
@@ -487,19 +618,20 @@ class DayLogApp:
         if self._stdout_handle is not None:
             for index, line in enumerate(frame_lines):
                 self._write_line_at(index, line[:width].ljust(width))
+            for index in range(len(frame_lines), self._last_frame_line_count):
+                self._write_line_at(index, " " * width)
             return
         self._move_cursor_home()
         self._write("\n".join(frame_lines))
 
     def _write_line_at(self, y: int, text: str) -> None:
-        self._move_cursor_to(0, y)
         written = DWORD(0)
-        ctypes.windll.kernel32.WriteConsoleW(
+        ctypes.windll.kernel32.WriteConsoleOutputCharacterW(
             self._stdout_handle,
             ctypes.c_wchar_p(text),
             len(text),
+            COORD(0, y),
             ctypes.byref(written),
-            None,
         )
 
     def _show_cursor(self) -> None:
@@ -523,11 +655,16 @@ class DayLogApp:
     def _clear_console(self) -> None:
         if self._stdout_handle is None:
             return
-        width, height = get_terminal_size((100, 32))
-        blank = " " * max(1, width - 1)
-        for row in range(height):
-            self._write_line_at(row, blank)
-        self._move_cursor_home()
+        width, height = self._get_console_dimensions()
+        total = max(1, width * height)
+        written = DWORD(0)
+        ctypes.windll.kernel32.FillConsoleOutputCharacterW(
+            self._stdout_handle,
+            ctypes.c_wchar(" "),
+            total,
+            COORD(0, 0),
+            ctypes.byref(written),
+        )
 
     def _close_console_handle(self) -> None:
         if self._owns_console_handle and self._original_stdout_handle not in {None, INVALID_HANDLE_VALUE}:
@@ -536,7 +673,34 @@ class DayLogApp:
             ctypes.windll.kernel32.CloseHandle(self._stdout_handle)
         self._stdout_handle = None
         self._original_stdout_handle = None
+        self._stdin_handle = None
         self._owns_console_handle = False
+
+    def _refresh_console_dimensions(self) -> None:
+        if self._stdout_handle is None:
+            width, height = get_terminal_size((100, 32))
+            self._console_width = width
+            self._console_height = height
+            return
+        info = CONSOLE_SCREEN_BUFFER_INFO()
+        if ctypes.windll.kernel32.GetConsoleScreenBufferInfo(self._stdout_handle, ctypes.byref(info)):
+            self._console_width = max(1, info.srWindow.Right - info.srWindow.Left + 1)
+            self._console_height = max(1, info.srWindow.Bottom - info.srWindow.Top + 1)
+        else:
+            width, height = get_terminal_size((100, 32))
+            self._console_width = width
+            self._console_height = height
+
+    def _get_console_dimensions(self) -> tuple[int, int]:
+        self._refresh_console_dimensions()
+        return self._console_width, self._console_height
+
+    def _is_visible_in_filtered_mode(self, item: Item, parent_item: Optional[Item]) -> bool:
+        if parent_item is not None and parent_item.is_task() and parent_item.status != TASK_OPEN:
+            return False
+        if item.is_task():
+            return item.status == TASK_OPEN
+        return True
 
 
 def apply_editor_key(state: EditorState, key: str) -> EditorState:

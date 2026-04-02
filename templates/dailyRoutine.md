@@ -9,7 +9,7 @@
     - [ ] Check pending daily inspection work orders
     - [ ] Clean up duplicate daily inspection work orders
     - [ ] Follow up on issue reports submitted to contractors
-    - [ ] Check open fault reports
-      - [ ] Levels A: >2026/3/3
+    - Check open fault reports
+      - [ ] Levels A: >2026/03/03
       - [ ] Levels B: >=2026/1/24
       - [ ] Levels C: >2026/1/2

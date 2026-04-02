@@ -90,8 +90,9 @@ def parse_markdown(content: str, fallback_date: date | None = None) -> Document:
 
 def serialize_document(doc: Document) -> str:
     lines = [f"# {doc.date_text}"]
-    if doc.preamble_lines:
-        lines.extend(doc.preamble_lines)
+    preamble = _clean_preamble_lines(doc.preamble_lines)
+    if preamble:
+        lines.extend(preamble)
 
     for section in SECTION_ORDER:
         lines.append("")
@@ -104,6 +105,10 @@ def serialize_document(doc: Document) -> str:
         lines.extend(extra_lines)
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _clean_preamble_lines(lines: Sequence[str]) -> List[str]:
+    return [line for line in lines if line.strip()]
 
 
 def clone_carried_tasks(items: Sequence[Item]) -> List[Item]:

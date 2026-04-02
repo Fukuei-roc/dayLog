@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from app.commands import apply_command, expand_note_macro, run_command
-from app.markdown_codec import parse_markdown
+from app.markdown_codec import parse_markdown, serialize_document
 from app.models import Item, SECTION_ROUTINE, SECTION_TEMPORARY, TASK_CANCELED, TASK_OPEN
 from app.storage import build_new_daily_document, ensure_project_layout, find_previous_daily_file, load_or_create_today
 from app.tui import CHAR_UNION, DIALOG_UNAVAILABLE, DayLogApp, EditorState, KEY_EVENT_RECORD, SHIFT_PRESSED, VisibleRow, apply_editor_key
@@ -97,6 +97,25 @@ class DayLogTests(unittest.TestCase):
         self.assertEqual(parent.text, "父任務")
         self.assertEqual(parent.children[0].text, "子任務")
         self.assertEqual(parent.children[1].text, "筆記")
+
+    def test_serialize_document_removes_extra_blank_preamble_lines(self) -> None:
+        doc = parse_markdown(
+            "\n".join(
+                [
+                    "# 2026-04-01",
+                    "",
+                    "",
+                    "",
+                    "## 每日例行任務",
+                    "- [ ] 任務",
+                    "",
+                    "## 臨時任務",
+                    "",
+                ]
+            )
+        )
+        serialized = serialize_document(doc)
+        self.assertTrue(serialized.startswith("# 2026-04-01\n\n## 每日例行任務"))
 
     def test_command_parser(self) -> None:
         result = run_command("/todo 收信", now=datetime(2026, 4, 1, 8, 0))

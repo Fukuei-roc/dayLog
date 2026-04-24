@@ -5,7 +5,7 @@ import sys
 import tkinter as tk
 
 
-def show_dialog(label: str, initial: str) -> str | None:
+def show_dialog(label: str, initial: str, multiline: bool = False) -> str | None:
     result = {"value": None}
     bg_main = "#333333"
     bg_input = "#454545"
@@ -80,22 +80,39 @@ def show_dialog(label: str, initial: str) -> str | None:
     title_label.bind("<ButtonPress-1>", start_drag)
     title_label.bind("<B1-Motion>", on_drag)
 
-    entry = tk.Entry(
-        outer,
-        bg=bg_input,
-        fg=fg_main,
-        insertbackground=fg_main,
-        relief="flat",
-        font=("Consolas", 14),
-        bd=0,
-    )
-    entry.pack(fill="x", ipady=10)
-    entry.insert(0, initial)
-    entry.selection_range(0, "end")
+    if multiline:
+        editor = tk.Text(
+            outer,
+            bg=bg_input,
+            fg=fg_main,
+            insertbackground=fg_main,
+            relief="flat",
+            font=("Consolas", 14),
+            bd=0,
+            height=8,
+            wrap="word",
+        )
+        editor.pack(fill="both", expand=True)
+        if initial:
+            editor.insert("1.0", initial)
+        editor.tag_add("sel", "1.0", "end-1c")
+    else:
+        editor = tk.Entry(
+            outer,
+            bg=bg_input,
+            fg=fg_main,
+            insertbackground=fg_main,
+            relief="flat",
+            font=("Consolas", 14),
+            bd=0,
+        )
+        editor.pack(fill="x", ipady=10)
+        editor.insert(0, initial)
+        editor.selection_range(0, "end")
 
     hint = tk.Label(
         outer,
-        text="Enter 儲存   Esc 取消",
+        text="Shift+Enter 換行   Enter 儲存   Esc 取消" if multiline else "Enter 儲存   Esc 取消",
         bg=bg_main,
         fg=fg_muted,
         font=("Consolas", 11),
@@ -107,7 +124,10 @@ def show_dialog(label: str, initial: str) -> str | None:
     buttons.pack(fill="x", pady=(16, 0))
 
     def submit(event=None):
-        result["value"] = entry.get()
+        if multiline:
+            result["value"] = editor.get("1.0", "end-1c")
+        else:
+            result["value"] = editor.get()
         root.destroy()
 
     cancel_button = tk.Button(
@@ -138,10 +158,16 @@ def show_dialog(label: str, initial: str) -> str | None:
     )
     submit_button.pack(side="right", padx=(0, 10))
 
-    root.bind("<Return>", submit)
+    def handle_return(event):
+        if multiline and (event.state & 0x0001):
+            return None
+        submit()
+        return "break"
+
+    root.bind("<Return>", handle_return)
     root.bind("<Escape>", cancel)
     root.protocol("WM_DELETE_WINDOW", cancel)
-    root.after(0, lambda: (root.lift(), root.focus_force(), entry.focus_force()))
+    root.after(0, lambda: (root.lift(), root.focus_force(), editor.focus_force()))
     root.mainloop()
     return result["value"]
 
@@ -149,7 +175,8 @@ def show_dialog(label: str, initial: str) -> str | None:
 def main() -> int:
     label = sys.argv[1] if len(sys.argv) > 1 else "輸入"
     initial = sys.argv[2] if len(sys.argv) > 2 else ""
-    value = show_dialog(label, initial)
+    multiline = "--multiline" in sys.argv[3:]
+    value = show_dialog(label, initial, multiline=multiline)
     sys.stdout.write(json.dumps({"value": value}, ensure_ascii=False))
     return 0
 

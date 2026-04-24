@@ -293,21 +293,13 @@ class DayLogApp:
 
     def _add_note(self, visible: List[VisibleRow]) -> None:
         row = visible[self.selected_index]
-        text = self._prompt("筆記內容: ")
-        if not text:
+        text = self._prompt_multiline("筆記內容: ")
+        note_texts = self._parse_batch_lines(text)
+        if not note_texts:
             self.message = "已取消新增"
             return
-        note = Item(kind="note", text=expand_note_macro(text))
-        if row.row_type == "section":
-            self.document.sections[row.section].append(note)
-        elif row.item is not None and row.item.is_task():
-            row.item.children.append(note)
-            row.item.collapsed = False
-        elif row.item is not None and row.item.is_note():
-            row.item.children.append(note)
-            row.item.collapsed = False
-        elif row.parent_list is not None and row.item is not None:
-            row.parent_list.insert(row.parent_list.index(row.item) + 1, note)
+        notes = [Item(kind="note", text=expand_note_macro(note_text)) for note_text in note_texts]
+        self._insert_notes(row, notes)
         self._persist("已新增筆記")
 
     def _add_quick_note(self) -> None:
@@ -419,8 +411,12 @@ class DayLogApp:
         result = self._line_editor(label.rstrip(": "), initial)
         return "" if result is None else result.strip()
 
-    def _line_editor(self, label: str, initial: str = "") -> Optional[str]:
-        dialog_result = self._dialog_prompt(label, initial)
+    def _prompt_multiline(self, label: str, initial: str = "") -> str:
+        result = self._line_editor(label.rstrip(": "), initial, multiline=True)
+        return "" if result is None else result
+
+    def _line_editor(self, label: str, initial: str = "", multiline: bool = False) -> Optional[str]:
+        dialog_result = self._dialog_prompt(label, initial, multiline=multiline)
         if dialog_result is not DIALOG_UNAVAILABLE:
             return dialog_result
         return self._inline_line_editor(label, initial)
@@ -439,10 +435,13 @@ class DayLogApp:
             if state is None:
                 continue
 
-    def _dialog_prompt(self, label: str, initial: str = "") -> Optional[str]:
+    def _dialog_prompt(self, label: str, initial: str = "", multiline: bool = False) -> Optional[str]:
         try:
+            command = [sys.executable, "-m", "app.input_dialog", label, initial]
+            if multiline:
+                command.append("--multiline")
             completed = subprocess.run(
-                [sys.executable, "-m", "app.input_dialog", label, initial],
+                command,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -458,6 +457,23 @@ class DayLogApp:
         cursor = max(0, min(state.cursor, len(state.text)))
         preview = state.text[:cursor] + "|" + state.text[cursor:]
         return f"{label}: {preview}  Enter 儲存 Esc 取消"
+
+    def _parse_batch_lines(self, text: str) -> List[str]:
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    def _insert_notes(self, row: VisibleRow, notes: List[Item]) -> None:
+        if row.row_type == "section":
+            self.document.sections[row.section].extend(notes)
+            return
+        if row.item is not None and row.item.kind in {"task", "note"}:
+            row.item.children.extend(notes)
+            row.item.collapsed = False
+            return
+        if row.parent_list is not None and row.item is not None:
+            insert_at = row.parent_list.index(row.item) + 1
+            for note in notes:
+                row.parent_list.insert(insert_at, note)
+                insert_at += 1
 
     def _persist(self, message: str) -> None:
         save_document(self.path, self.document)

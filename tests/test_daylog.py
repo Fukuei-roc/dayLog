@@ -167,7 +167,7 @@ class DayLogTests(unittest.TestCase):
         parent_task.children.append(parent_note)
         doc.sections[SECTION_TEMPORARY] = [parent_task]
         app = DayLogApp(doc, self.paths.daily_file(date(2026, 4, 1)))
-        app._prompt = lambda label, initial="": "第二層筆記"
+        app._prompt_multiline = lambda label, initial="": "第二層筆記"
         visible = [
             VisibleRow(row_type="section", section=SECTION_TEMPORARY),
             VisibleRow(row_type="item", section=SECTION_TEMPORARY, item=parent_task, parent_list=doc.sections[SECTION_TEMPORARY], parent_item=None, depth=0),
@@ -176,6 +176,34 @@ class DayLogTests(unittest.TestCase):
         app.selected_index = 2
         app._add_note(visible)
         self.assertEqual([child.text for child in parent_note.children], ["第二層筆記"])
+
+    def test_add_note_batch_input_creates_multiple_child_notes(self) -> None:
+        doc = build_new_daily_document(self.paths, date(2026, 4, 1))
+        parent_task = Item(kind="task", text="日檢工單退回", status=TASK_OPEN)
+        doc.sections[SECTION_TEMPORARY] = [parent_task]
+        app = DayLogApp(doc, self.paths.daily_file(date(2026, 4, 1)))
+        app._prompt_multiline = lambda label, initial="": " 吳俊穎 \n\n張恩得\n  莊任翔  \n鄒翔宇\n"
+        visible = [
+            VisibleRow(row_type="section", section=SECTION_TEMPORARY),
+            VisibleRow(row_type="item", section=SECTION_TEMPORARY, item=parent_task, parent_list=doc.sections[SECTION_TEMPORARY], parent_item=None, depth=0),
+        ]
+        app.selected_index = 1
+        app._add_note(visible)
+        self.assertEqual([child.text for child in parent_task.children], ["吳俊穎", "張恩得", "莊任翔", "鄒翔宇"])
+
+    def test_add_note_batch_input_empty_content_adds_nothing(self) -> None:
+        doc = build_new_daily_document(self.paths, date(2026, 4, 1))
+        parent_task = Item(kind="task", text="日檢工單退回", status=TASK_OPEN)
+        doc.sections[SECTION_TEMPORARY] = [parent_task]
+        app = DayLogApp(doc, self.paths.daily_file(date(2026, 4, 1)))
+        app._prompt_multiline = lambda label, initial="": " \n  \n"
+        visible = [
+            VisibleRow(row_type="section", section=SECTION_TEMPORARY),
+            VisibleRow(row_type="item", section=SECTION_TEMPORARY, item=parent_task, parent_list=doc.sections[SECTION_TEMPORARY], parent_item=None, depth=0),
+        ]
+        app.selected_index = 1
+        app._add_note(visible)
+        self.assertEqual(parent_task.children, [])
 
     def test_expand_note_macro_time_with_suffix(self) -> None:
         result = expand_note_macro("/time 開始會議", now=datetime(2026, 4, 1, 9, 30))
@@ -296,13 +324,13 @@ class DayLogTests(unittest.TestCase):
 
     def test_line_editor_does_not_fallback_when_dialog_cancelled(self) -> None:
         app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
-        app._dialog_prompt = lambda label, initial="": None
+        app._dialog_prompt = lambda label, initial="", multiline=False: None
         app._inline_line_editor = lambda label, initial="": "不應進入"
         self.assertIsNone(app._line_editor("任務內容", ""))
 
     def test_line_editor_falls_back_only_when_dialog_unavailable(self) -> None:
         app = DayLogApp(build_new_daily_document(self.paths, date(2026, 4, 1)), self.paths.daily_file(date(2026, 4, 1)))
-        app._dialog_prompt = lambda label, initial="": DIALOG_UNAVAILABLE
+        app._dialog_prompt = lambda label, initial="", multiline=False: DIALOG_UNAVAILABLE
         app._inline_line_editor = lambda label, initial="": "fallback"
         self.assertEqual(app._line_editor("任務內容", ""), "fallback")
 
